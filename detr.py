@@ -87,7 +87,7 @@ class FeedForward(tf.keras.layers.Layer):
   def __init__(self, emb_sz, dff, dropout_rate=0.1):
     super().__init__()
     self.seq = tf.keras.Sequential([
-      tf.keras.layers.Dense(dff, activation=tf.keras.layers.activations.gelu),
+      tf.keras.layers.Dense(dff, activation='relu'),
       tf.keras.layers.Dense(emb_sz),
       tf.keras.layers.Dropout(dropout_rate)
     ])
@@ -144,7 +144,6 @@ class Encoder(tf.keras.layers.Layer):
     for i in range(self.num_layers):
       x = self.enc_layers[i](x)
     return x  # Should result in shape of (batch_size, seq_len, emb_sz).
-  
 
 #--------------------------------------------------------------------------------------------------------------# 
 # Decoder: Consists of Encoder Layers, which are blocks of Self Attention -> FFN -> Residual Connection -> LN
@@ -206,6 +205,7 @@ class Transformer(tf.keras.Model):
                            vocab_size=target_vocab_size,
                            dropout_rate=dropout_rate,
                            all_patches=True)
+    self.jank_transpose = tf.keras.layers.Dense(fields['MAX_COUNT_BBOXES'])
 
   # Compile the model 
   def compile(self, optimizer, loss, metrics):
@@ -215,14 +215,35 @@ class Transformer(tf.keras.Model):
 
   # Forward pass 
   def call(self, inputs):
+    
+    # Unpack the input
     patches, bbox_context = inputs  
+
+    # Reshape to flatten the mid dimensions 
     bbox_context = tf.reshape(bbox_context, (bbox_context.shape[0], -1, 1))  # flatten & upsample the context, input: the following should return (batch_sz, 256, emb_sz)
+    patches = tf.reshape(patches, (patches.shape[0], -1, 1))  # flatten & upsample the context, input: the following should return (batch_sz, 256, emb_sz)
+    
+    # Embed the context and patches 
     bbox_context = self.emb_context(bbox_context) # Embed your context 
     patches = self.emb_patches(patches) # Embed your img patches 
-    embedded = bbox_context + patches
-    x = self.encoder(embedded) # The following should return: (batch_sz, 256, emb_sz), {(batch_size, context_len, emb_sz)}
-    logits = tf.squeeze(x, axis=2) # The following should return: (batch_size, 256, 2) {(batch_size, target_len, target_vocab_size)}
-    return logits # Return the final output and the attention weights.
+
+    # Flip the bbox_context, patches -> Dense layer (otherwise we can't get back the 50 sz we want)
+    patches = tf.transpose(patches, [0, 2, 1]) # <- [batch_sz, 132, 196]
+    bbox_context = tf.transpose(bbox_context, [0, 2, 1]) 
+
+    # Project -> number of bboxes space (N)
+    patches = self.jank_transpose(patches)
+    bbox_context = self.jank_transpose(bbox_context)
+
+    # Flip back (rly shit workaround)
+    patches = tf.transpose(patches, [0, 2, 1])
+    bbox_context = tf.transpose(bbox_context, [0, 2, 1]) 
+
+    embedded = bbox_context + patches 
+    
+    # Pass into the encoder 
+    encoder_output = self.encoder(embedded) # The following should return: (batch_sz, 256, emb_sz), {(batch_size, context_len, emb_sz)}
+    return encoder_output # Return the final output and the attention weights.
 
   def loss(label, pred):
     loss_object = tf.keras.losses.CategoricalCrossentropy(from_logits=False, reduction='none')
@@ -235,13 +256,6 @@ class Transformer(tf.keras.Model):
     correct_predictions = tf.equal(pred_indices, true_indices)
     accuracy = tf.reduce_mean(tf.cast(correct_predictions, tf.float32))
     return accuracy
-  
-  # Train the model 
-  def train(self, train_dataset, params, train_metrics_dict): 
-      train_dataset.shuffle(buffer_size=3) # Shuffle the dataset every epoch
-      for patches, bbox_context, labels in train_dataset:
-          with tf.GradientTape() as tape: 
-            out = self((patches, bbox_context))
 
 #--------------------------------------------------------------------------------------------------------------# 
 '''
@@ -255,18 +269,18 @@ class DETR(tf.keras.Model):
 
     self.transformer = transformer
 
-    self.class_embed = tf.keras.layers.Dense(num_classes + 1) # <- This will transform the output of the transformer -> class embedding (YES human or NO human)
-    self.bbox_embed = tf.keras.layers.Sequential([
-      tf.keras.layers.Dense(), 
-      tf.keras.layers.Dense(), 
+    self.class_embed = tf.keras.layers.Dense(num_classes, activation='softmax') # <- This will transform the output of the transformer -> class embedding (YES human or NO human)
+    self.bbox_embed = tf.keras.Sequential([
+      tf.keras.layers.Dense(4, activation='relu'), 
     ]) # <- This will convert the output of the transformer -> bbox embedding (coordinates)
 
-    self.input_proj = tf.keras.layers.Conv2d(backbone.num_channels, pass, pass) # <- Project the img into the same subspace as the bbox context
+    self.input_proj = tf.keras.layers.Conv2D(filters=1, kernel_size=1, padding='same') # <- Project the img into the same subspace as the bbox context
     self.backbone = backbone
     self.aux_loss = aux_loss
 
   def call(self, inputs):
 
+    # * NOTES ON THEIR CODE (this is not at all what's written below -- ignore)
     # Samples is tuple of: 
         # Samples: [batch_sz, 3, H, W]
         # Binary mask: [batch_sz, H, W]
@@ -285,12 +299,18 @@ class DETR(tf.keras.Model):
     # Extract outputs from the pre-trained backbone model
     src, bbox_contents = inputs
     final_outputs = self.backbone(src)
-    src = final_outputs[-1]
+    src = final_outputs[len(final_outputs)-2] # (64, 14, 14, 1024) 
+    print("Backbone output we're extracting", src.shape)
     src = self.input_proj(src) # The last layer will have dimension: (b, 7, 7, 2048). Project that into the same input space as bbox content
-    tout = self.transformer(src)
+    print("Projection output", src.shape)
+    tout = self.transformer((src, bbox_contents))
+    print("Transformer output:", tout.shape)
     outputs_class = self.class_embed(tout)
+    print("Output class", outputs_class.shape)
     outputs_coords = self.bbox_embed(tout)
+    print("Outputs coords", outputs_coords.shape)
     out = {'classes': outputs_class, 'coords': outputs_coords}
+    print("OUTPUT:", out['classes'], out['coords'])
     return out
 
 '''
@@ -303,19 +323,24 @@ def build_detr():
   train_dataset = create_filtered_dataset(fields['images_path'], fields['annotations_path'], 'train')
   batched_train_dataset = train_dataset.batch(batch_size=hp['batch_sz'], drop_remainder=False)
 
-  # Initialize a ResNet50 model & Pre-Train it 
+  # Initialize a ResNet50 model & pre-train it 
   model = ResNet50(include_top=False, weights="imagenet")
   layer_names = ['conv1_relu', 'conv2_block3_out', 'conv3_block4_out', 'conv4_block6_out', 'conv5_block3_out'] 
   layers = [model.get_layer(name).output for name in layer_names]
   wrapper_model = tf.keras.Model(inputs=model.input, outputs=layers)
-  transformer_model = Transformer(num_layers=hp[''], emb_sz=hp[''], num_heads=hp[''], input_vocab_size=hp[''], target_vocab_size=hp[''], dropout_rate=hp[''])
+  transformer_model = Transformer(num_layers=hp['num_layers'], emb_sz=hp['emb_sz'], dff=hp['num_features'], num_heads=hp['num_att_heads'], input_vocab_size=hp['num_classes'], target_vocab_size=hp['num_classes'], dropout_rate=hp['dropout_rate'])
   detr_model = DETR(wrapper_model, transformer_model, hp['num_classes'], True)
 
+  # Iterate through the dataset and pass it through the model 
   for imgs, overlap_counts, bboxes, one_hot_bboxes in batched_train_dataset: 
     out_dict = detr_model((imgs, overlap_counts))
-    pass 
 
-  
+
+'''
+Run the DETR model 
+'''
+build_detr() 
+
 
 
   

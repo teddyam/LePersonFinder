@@ -8,8 +8,8 @@ hp = {
     'query_dim': 10, 
     'value_dim': 10, 
     'output_sz': 8, 
-    'window_sz': 256,
-    'num_features': 768, 
+    'window_sz': 196,
+    'num_features': 672, 
     'emb_sz': 132, 
     'num_layers': 2, 
     'learning_rate': 0.01, 
@@ -29,5 +29,5 @@ fields = {
     'PATCH_SIZE': 16,
     'NUM_PATCHES': 196,
     'PROJECTION_DIM': 64,
-    'MAX_COUNT_BBOXES': 35
+    'MAX_COUNT_BBOXES': 50
 }

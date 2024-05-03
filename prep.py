@@ -212,6 +212,7 @@ def preprocess_image_no_patch(image_path, annotation_path):
       new_shape[1], new_shape[0], pad_w, pad_h
   )
   
+  # Pad the bboxes so that they're of size N for predictions 
   @tf.function
   def pad_bounding_boxes(bounding_boxes_scaled):
     num_boxes = tf.shape(bounding_boxes_scaled)[0]
@@ -260,14 +261,14 @@ test_dataset = create_filtered_dataset(images_path, annotations_path, 'test')
 Viewability (called patches here but since replacemenet w/ no patching function) this 
 should really just be the original images + some padding 
 '''
-# batched_train_dataset = train_dataset.batch(batch_size=64)
-# for patches, overlap_counts, bboxes, one_hot_bboxes in batched_train_dataset.take(1):
-#     print(patches.shape, overlap_counts.shape, bboxes.shape, one_hot_bboxes.shape)
-#     print('Train patches shape:', patches.shape)
-#     print('Train bounding boxes:', bboxes)
-#     print('Train overlap counts shape:', overlap_counts.shape)
-#     print('Train sample overlap counts:', overlap_counts.numpy().flatten()[:256])
-#     print('Train one-hot encoded bounding boxes:', one_hot_bboxes.numpy())
+batched_train_dataset = train_dataset.batch(batch_size=64)
+for patches, overlap_counts, bboxes, one_hot_bboxes in batched_train_dataset.take(1):
+    print(patches.shape, overlap_counts.shape, bboxes.shape, one_hot_bboxes.shape)
+    print('Train patches shape:', patches.shape)
+    # print('Train bounding boxes:', bboxes)
+    print('Train overlap counts shape:', overlap_counts.shape)
+    # print('Train sample overlap counts:', overlap_counts.numpy().flatten()[:256])
+    # print('Train one-hot encoded bounding boxes:', one_hot_bboxes.numpy())
 
 # for patches, overlap_counts, bboxes, one_hot_bboxes in test_dataset.take(1):
 #     print('Test patches shape:', patches.shape)
