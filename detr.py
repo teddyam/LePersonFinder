@@ -12,7 +12,7 @@ from params import hp, fields
 # Positional embedding class that will look a token's embedding vector and add the corresponding position vector 
 #--------------------------------------------------------------------------------------------------------------# 
 class PositionalEmbedding(tf.keras.layers.Layer):
-  def __init__(self, vocab_size, emb_sz):
+  def __init__(self, input_size, emb_sz):
     super().__init__()
     self.emb_sz = emb_sz
     self.embedding = tf.keras.layers.Dense(emb_sz)
@@ -123,12 +123,12 @@ class EncoderLayer(tf.keras.layers.Layer):
 
 class Encoder(tf.keras.layers.Layer):
   def __init__(self, *, num_layers, emb_sz, num_heads,
-               dff, vocab_size, dropout_rate=0.1):
+               dff, input_size, dropout_rate=0.1):
     super().__init__()
     self.emb_sz = emb_sz
     self.num_layers = num_layers
     self.pos_embedding = PositionalEmbedding(
-        vocab_size=vocab_size, emb_sz=emb_sz)
+        input_size=input_size, emb_sz=emb_sz)
     self.enc_layers = [
         EncoderLayer(emb_sz=emb_sz,
                      num_heads=num_heads,
@@ -163,13 +163,13 @@ class DecoderLayer(tf.keras.layers.Layer):
     return x
 
 class Decoder(tf.keras.layers.Layer):
-  def __init__(self, *, num_layers, emb_sz, num_heads, dff, vocab_size,
+  def __init__(self, *, num_layers, emb_sz, num_heads, dff, target_size,
                dropout_rate=0.1, all_patches):
     super(Decoder, self).__init__()
     self.emb_sz = emb_sz
     self.num_layers = num_layers
     self.all_patches = all_patches
-    self.pos_embedding = PositionalEmbedding(vocab_size=vocab_size, emb_sz=emb_sz)
+    self.pos_embedding = PositionalEmbedding(target_size=target_size, emb_sz=emb_sz)
     self.dropout = tf.keras.layers.Dropout(dropout_rate)
     self.dec_layers = [DecoderLayer(emb_sz=emb_sz, num_heads=num_heads, dff=dff, dropout_rate=dropout_rate) for _ in range(num_layers)]
     self.ffout = tf.keras.layers.Dense(1)
@@ -192,17 +192,17 @@ class Decoder(tf.keras.layers.Layer):
 #--------------------------------------------------------------------------------------------------------------# 
 class Transformer(tf.keras.Model):
   def __init__(self, *, num_layers, emb_sz, num_heads, dff,
-               input_vocab_size, target_vocab_size, dropout_rate=0.1):
+               input_size, target_size, dropout_rate=0.1):
     super().__init__()
     self.emb_context = tf.keras.layers.Dense(emb_sz)
     self.emb_patches = tf.keras.layers.Dense(emb_sz)
     self.encoder = Encoder(num_layers=num_layers, emb_sz=emb_sz,
                            num_heads=num_heads, dff=dff,
-                           vocab_size=input_vocab_size,
+                           input_size=input_size,
                            dropout_rate=dropout_rate)
     self.decoder = Decoder(num_layers=num_layers, emb_sz=emb_sz,
                            num_heads=num_heads, dff=dff,
-                           vocab_size=target_vocab_size,
+                           target_size=target_size,
                            dropout_rate=dropout_rate,
                            all_patches=True)
     self.jank_transpose = tf.keras.layers.Dense(fields['MAX_COUNT_BBOXES'])
@@ -243,7 +243,11 @@ class Transformer(tf.keras.Model):
     
     # Pass into the encoder 
     encoder_output = self.encoder(embedded) # The following should return: (batch_sz, 256, emb_sz), {(batch_size, context_len, emb_sz)}
-    return encoder_output # Return the final output and the attention weights.
+
+    # Pass the encoder output -> decoder 
+    decoder_output = self.decoder(encoder_output)
+
+    return decoder_output # Return the final output and the attention weights.
 
   def loss(label, pred):
     loss_object = tf.keras.losses.CategoricalCrossentropy(from_logits=False, reduction='none')
@@ -279,39 +283,15 @@ class DETR(tf.keras.Model):
     self.aux_loss = aux_loss
 
   def call(self, inputs):
-
-    # * NOTES ON THEIR CODE (this is not at all what's written below -- ignore)
-    # Samples is tuple of: 
-        # Samples: [batch_sz, 3, H, W]
-        # Binary mask: [batch_sz, H, W]
-    # 1. First, pass this tuple -> the backbone, which was pre-built and passed to this module beforehand 
-        # .build_backbone() will a) instantiate a Backbone, b) instantiate a Joiner, which takes in a Backbone -> model
-    # 2. Then extract the tuple of: Samples, Mask from backbone out list (not the pos list) SPECIFICALLY the last one...
-        # Pass in => Transformer model 
-            # 1. Projection of the Samples
-            # 2. Mask
-            # 3. Take the last pos embedding too...(corresponding to in puts)
-    # 3. Then you will take the output of the Transformer => the following: 
-        # 1. Pass into an embed class => outputs the class 
-        # 2. Pass into a coords class => outputs the coords 
-    # 4. Init a dictionary for logits and boxes and then just return that
-    
     # Extract outputs from the pre-trained backbone model
     src, bbox_contents = inputs
-    print(src)
     final_outputs = self.backbone(src)
     src = final_outputs[len(final_outputs)-2] # (64, 14, 14, 1024) 
-    # print("Backbone output we're extracting", src.shape)
     src = self.input_proj(src) # The last layer will have dimension: (b, 7, 7, 2048). Project that into the same input space as bbox content
-    # print("Projection output", src.shape)
     tout = self.transformer((src, bbox_contents))
-    # print("Transformer output:", tout.shape)
     outputs_class = self.class_embed(tout)
-    # print("Output class", outputs_class.shape)
     outputs_coords = self.bbox_embed(tout)
-    # print("Outputs coords", outputs_coords.shape)
     out = {'classes': outputs_class, 'coords': outputs_coords}
-    # print("OUTPUT:", out['classes'], out['coords'])
     return out
 
 '''
@@ -321,7 +301,9 @@ from prep import XMLtoJSON, create_filtered_dataset
 from keras.applications import ResNet50
 
 def build_detr(): 
-  train_dataset = create_filtered_dataset(fields['images_path'], fields['annotations_path'], 'train', no_patch=True)
+
+  # Use the old image paths for the set based prediction rather than the single bbox one.
+  train_dataset = create_filtered_dataset(images_path=fields['images_path'], annotations_path=fields['annotations_path'], subset_prefix='train', img_size=224, max_bbox=35, exclude_type='none', no_patch=True)
   batched_train_dataset = train_dataset.batch(batch_size=hp['batch_sz'], drop_remainder=False)
 
   # Initialize a ResNet50 model & pre-train it 
@@ -329,13 +311,12 @@ def build_detr():
   layer_names = ['conv1_relu', 'conv2_block3_out', 'conv3_block4_out', 'conv4_block6_out', 'conv5_block3_out'] 
   layers = [model.get_layer(name).output for name in layer_names]
   wrapper_model = tf.keras.Model(inputs=model.input, outputs=layers)
-  transformer_model = Transformer(num_layers=hp['num_layers'], emb_sz=hp['emb_sz'], dff=hp['num_features'], num_heads=hp['num_att_heads'], input_vocab_size=hp['num_classes'], target_vocab_size=hp['num_classes'], dropout_rate=hp['dropout_rate'])
+  transformer_model = Transformer(num_layers=hp['num_layers'], emb_sz=hp['emb_sz'], dff=hp['num_features'], num_heads=hp['num_att_heads'], input_size=hp['num_classes'], target_size=hp['num_classes'], dropout_rate=hp['dropout_rate'])
   detr_model = DETR(wrapper_model, transformer_model, hp['num_classes'], True)
 
   # Iterate through the dataset and pass it through the model 
   for imgs, overlap_counts, bboxes, one_hot_bboxes in batched_train_dataset: 
     out_dict = detr_model((imgs, overlap_counts))
-
 
 '''
 Run the DETR model 
@@ -343,6 +324,24 @@ Run the DETR model
 build_detr() 
 
 
+'''
+OLD NOTES/REF FOR DETR
+'''
+# * NOTES ON THEIR CODE (this is not at all what's written below -- ignore)
+# Samples is tuple of: 
+    # Samples: [batch_sz, 3, H, W]
+    # Binary mask: [batch_sz, H, W]
+# 1. First, pass this tuple -> the backbone, which was pre-built and passed to this module beforehand 
+    # .build_backbone() will a) instantiate a Backbone, b) instantiate a Joiner, which takes in a Backbone -> model
+# 2. Then extract the tuple of: Samples, Mask from backbone out list (not the pos list) SPECIFICALLY the last one...
+    # Pass in => Transformer model 
+        # 1. Projection of the Samples
+        # 2. Mask
+        # 3. Take the last pos embedding too...(corresponding to in puts)
+# 3. Then you will take the output of the Transformer => the following: 
+    # 1. Pass into an embed class => outputs the class 
+    # 2. Pass into a coords class => outputs the coords 
+# 4. Init a dictionary for logits and boxes and then just return that
 
   
 

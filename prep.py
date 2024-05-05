@@ -6,7 +6,7 @@ import time
 import xml.etree.ElementTree as ET
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-import cv2
+# import cv2
 from tqdm import tqdm  
 from PIL import Image
 
@@ -164,15 +164,17 @@ def load_json(annotation_path):
     original_height.set_shape([])
     return bounding_boxes, num_bboxes, original_width, original_height
 
-IMAGE_SIZE = 256
-PATCH_SIZE = 16
-NUM_PATCHES = (IMAGE_SIZE // PATCH_SIZE) ** 2
+'''
+NK - moved all param specs down into function signatures (for coordination across files, not a very effective solution ngl bt whatever)
+'''
+# NUM_PATCHES = (IMAGE_SIZE // PATCH_SIZE) ** 2 # not used, just ignore this calc
 PROJECTION_DIM = 64
-MAX_COUNT_BBOXES = 35
 
-def scale_bounding_boxes(bounding_boxes, original_width, original_height, new_width, new_height, pad_w, pad_h):
+
+def scale_bounding_boxes(bounding_boxes, original_width, original_height, new_width, new_height, pad_w, pad_h, max_bbox):
+
   if tf.size(bounding_boxes) == 0:
-    return tf.zeros((MAX_COUNT_BBOXES, 4), dtype=tf.float32)
+    return tf.zeros((max_bbox, 4), dtype=tf.float32)
 
   original_width = tf.cast(original_width, tf.float32)
   original_height = tf.cast(original_height, tf.float32)
@@ -214,20 +216,22 @@ def compute_overlap_counts(bboxes, image_size, patch_size):
 '''
 Preprocesses the img: default patching 
 '''
-def preprocess_image_patched(image_path, annotation_path):
+def preprocess_image_patched(image_path, annotation_path, img_size, max_bbox):
   image = tf.io.read_file(image_path)
   image = tf.image.decode_jpeg(image, channels=3)
 
+  PATCH_SIZE = int(img_size ** (1/2)) #<- nk
+
   original_shape = tf.cast(tf.shape(image)[:2], tf.float32)
-  ratio = IMAGE_SIZE / tf.reduce_max(original_shape)
+  ratio = img_size / tf.reduce_max(original_shape)
   new_shape = tf.round(original_shape * ratio)
 
   image = tf.image.resize(image, tf.cast(new_shape, tf.int32))
 
-  pad_w = (IMAGE_SIZE - new_shape[1]) / 2
-  pad_h = (IMAGE_SIZE - new_shape[0]) / 2
-  pad_w = [pad_w, IMAGE_SIZE - new_shape[1] - pad_w]
-  pad_h = [pad_h, IMAGE_SIZE - new_shape[0] - pad_h]
+  pad_w = (img_size - new_shape[1]) / 2
+  pad_h = (img_size - new_shape[0]) / 2
+  pad_w = [pad_w, img_size - new_shape[1] - pad_w]
+  pad_h = [pad_h, img_size - new_shape[0] - pad_h]
 
   image = tf.pad(image, [[int(pad_h[0]), int(pad_h[1])], [int(pad_w[0]), int(pad_w[1])], [0, 0]], constant_values=0)
   image = Rescaling(1./255)(image)
@@ -244,11 +248,11 @@ def preprocess_image_patched(image_path, annotation_path):
   bounding_boxes, num_bboxes, original_width, original_height = load_json(annotation_path)
   bounding_boxes_scaled = scale_bounding_boxes(
       bounding_boxes, original_width, original_height,
-      new_shape[1], new_shape[0], pad_w, pad_h
+      new_shape[1], new_shape[0], pad_w, pad_h, max_bbox
   )
   
-  overlap_counts = compute_overlap_counts(bounding_boxes_scaled, IMAGE_SIZE, PATCH_SIZE)
-  one_hot_bboxes = tf.one_hot(num_bboxes, MAX_COUNT_BBOXES)
+  overlap_counts = compute_overlap_counts(bounding_boxes_scaled, img_size, PATCH_SIZE)
+  one_hot_bboxes = tf.one_hot(num_bboxes, max_bbox)
 
   return patches, overlap_counts, bounding_boxes_scaled, one_hot_bboxes
 
@@ -256,44 +260,45 @@ def preprocess_image_patched(image_path, annotation_path):
 NK - no patching, just raw images with padding to compensate for discrepancies in sizes (taken 
 from Sam minus patch)
 '''
-def preprocess_image_no_patch(image_path, annotation_path):
+def preprocess_image_no_patch(image_path, annotation_path, img_size, max_bbox):
   
   image = tf.io.read_file(image_path)
   image = tf.image.decode_jpeg(image, channels=3)
 
+  PATCH_SIZE = int(img_size ** (1/2)) # <- nk
+
   original_shape = tf.cast(tf.shape(image)[:2], tf.float32)
-  ratio = IMAGE_SIZE / tf.reduce_max(original_shape)
+  ratio = img_size / tf.reduce_max(original_shape)
   new_shape = tf.round(original_shape * ratio)
 
   image = tf.image.resize(image, tf.cast(new_shape, tf.int32))
 
-  pad_w = (IMAGE_SIZE - new_shape[1]) / 2
-  pad_h = (IMAGE_SIZE - new_shape[0]) / 2
-  pad_w = [pad_w, IMAGE_SIZE - new_shape[1] - pad_w]
-  pad_h = [pad_h, IMAGE_SIZE - new_shape[0] - pad_h]
+  pad_w = (img_size - new_shape[1]) / 2
+  pad_h = (img_size - new_shape[0]) / 2
+  pad_w = [pad_w, img_size - new_shape[1] - pad_w]
+  pad_h = [pad_h, img_size - new_shape[0] - pad_h]
 
   image = tf.pad(image, [[int(pad_h[0]), int(pad_h[1])], [int(pad_w[0]), int(pad_w[1])], [0, 0]], constant_values=0)
-  print(image)
   image = Rescaling(1./255)(image)
 
   bounding_boxes, num_bboxes, original_width, original_height = load_json(annotation_path)
   bounding_boxes_scaled = scale_bounding_boxes(
       bounding_boxes, original_width, original_height,
-      new_shape[1], new_shape[0], pad_w, pad_h
+      new_shape[1], new_shape[0], pad_w, pad_h, max_bbox
   )
   
   # Pad the bboxes so that they're of size N for predictions 
   @tf.function
   def pad_bounding_boxes(bounding_boxes_scaled):
     num_boxes = tf.shape(bounding_boxes_scaled)[0]
-    padding_value = MAX_COUNT_BBOXES - num_boxes
+    padding_value = max_bbox - num_boxes
     padding_value = tf.cast(padding_value, tf.int32)
     bounding_boxes_padded = tf.pad(bounding_boxes_scaled, [[0, padding_value], [0, 0]], mode='CONSTANT')
     return bounding_boxes_padded
 
   bounding_boxes_scaled = pad_bounding_boxes(bounding_boxes_scaled)
-  overlap_counts = compute_overlap_counts(bounding_boxes_scaled, IMAGE_SIZE, PATCH_SIZE)
-  one_hot_bboxes = tf.one_hot(num_bboxes, MAX_COUNT_BBOXES)
+  overlap_counts = compute_overlap_counts(bounding_boxes_scaled, img_size, PATCH_SIZE)
+  one_hot_bboxes = tf.one_hot(num_bboxes, max_bbox)
 
   return image, overlap_counts, bounding_boxes_scaled, one_hot_bboxes
 
@@ -303,12 +308,13 @@ File exists or not
 '''
 def file_exists(file_path):
     return tf.io.gfile.exists(file_path.numpy().decode())
+
 '''
 Creates our datasets
 Note: set no_patch to false for VIT and the annotations_path and images_path to new_annotations_path and new_images_path
 '''
 
-def create_filtered_dataset(images_path, annotations_path, subset_prefix, exclude_type='none', no_patch=False):
+def create_filtered_dataset(images_path, annotations_path, subset_prefix, img_size, max_bbox, exclude_type='none', no_patch=False):
     if exclude_type == 'none':
         filename_pattern = f"{subset_prefix}_*.jpg"
     elif exclude_type == 'composite':
@@ -317,7 +323,7 @@ def create_filtered_dataset(images_path, annotations_path, subset_prefix, exclud
         filename_pattern = f"{subset_prefix}_*[^0-9].jpg"
     else:
         raise ValueError("Invalid exclude_type specified.")
-
+    
     image_files = tf.data.Dataset.list_files(os.path.join(images_path, filename_pattern))
 
     def filter_func(image_file):
@@ -331,29 +337,29 @@ def create_filtered_dataset(images_path, annotations_path, subset_prefix, exclud
         annotation_file = tf.strings.regex_replace(image_file, images_path, annotations_path)
         annotation_file = tf.strings.regex_replace(annotation_file, '\.jpg', '.json')
         if no_patch:
-            return preprocess_image_no_patch(image_file, annotation_file)
+            return preprocess_image_no_patch(image_file, annotation_file, img_size, max_bbox)
         
-        return preprocess_image_patched(image_file, annotation_file)
+        return preprocess_image_patched(image_file, annotation_file, img_size, max_bbox)
 
     dataset = filtered_image_dataset.map(load_and_preprocess_image, num_parallel_calls=tf.data.AUTOTUNE)
     return dataset
 
-train_dataset = create_filtered_dataset(images_path, annotations_path, 'train')
-test_dataset = create_filtered_dataset(images_path, annotations_path, 'test')
+# NK: Really jank but just specify img size here. This is just testing/playing around with parameters so ignore this for the time being
+train_dataset = create_filtered_dataset(new_images_path, new_annotations_path, 'train', 256, 1, 'none', False)
+test_dataset = create_filtered_dataset(new_images_path, new_annotations_path, 'test', 256, 1, 'none', False)
 
 ''' 
 Viewability (called patches here but since replacemenet w/ no patching function) this 
 should really just be the original images + some padding 
 '''
-batched_train_dataset = train_dataset.batch(batch_size=64)
-for patches, overlap_counts, bboxes, one_hot_bboxes in batched_train_dataset.take(1):
-    print(patches)
-    # print(patches.shape, overlap_counts.shape, bboxes.shape, one_hot_bboxes.shape)
-    # print('Train patches shape:', patches.shape)
-    # print('Train bounding boxes:', bboxes)
-    # print('Train overlap counts shape:', overlap_counts.shape)
-    # print('Train sample overlap counts:', overlap_counts.numpy().flatten()[:256])
-    # print('Train one-hot encoded bounding boxes:', one_hot_bboxes.numpy())
+# batched_train_dataset = train_dataset.batch(batch_size=64)
+# for patches, overlap_counts, bboxes, one_hot_bboxes in train_dataset:
+#     print(patches.shape, overlap_counts.shape, bboxes.shape, one_hot_bboxes.shape)
+#     print('Train patches shape:', patches.shape)
+#     print('Train bounding boxes:', bboxes)
+#     print('Train overlap counts shape:', overlap_counts.shape)
+#     print('Train sample overlap counts:', overlap_counts.numpy().flatten()[:256])
+#     print('Train one-hot encoded bounding boxes:', one_hot_bboxes.numpy())
 
 # for patches, overlap_counts, bboxes, one_hot_bboxes in test_dataset.take(1):
 #     print('Test patches shape:', patches.shape)

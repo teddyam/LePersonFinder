@@ -9,13 +9,13 @@ import matplotlib.patches as mpatches
 from tensorflow import keras
 from keras.layers import Dense, Rescaling
 from prep import train_dataset, test_dataset
-from params import hp
+from params import hp_vit, fields
 
 #--------------------------------------------------------------------------------------------------------------# 
 # Positional embedding class that will look a token's embedding vector and add the corresponding position vector 
 #--------------------------------------------------------------------------------------------------------------# 
 class PositionalEmbedding(tf.keras.layers.Layer):
-  def __init__(self, vocab_size, emb_sz):
+  def __init__(self, input_size, emb_sz):
     super().__init__()
     self.emb_sz = emb_sz
     self.embedding = tf.keras.layers.Dense(emb_sz)
@@ -82,7 +82,7 @@ class FeedForward(tf.keras.layers.Layer):
   def __init__(self, emb_sz, dff, dropout_rate=0.1):
     super().__init__()
     self.seq = tf.keras.Sequential([
-      tf.keras.layers.Dense(dff, activation=tf.keras.layers.activations.gelu),
+      tf.keras.layers.Dense(dff, activation='relu'),
       tf.keras.layers.Dense(emb_sz),
       tf.keras.layers.Dropout(dropout_rate)
     ])
@@ -100,7 +100,7 @@ class FeedForward(tf.keras.layers.Layer):
 # Encoder: Consists of Encoder Layers, which are blocks of Self Attention -> FFN -> Residual Connection -> LN
 #--------------------------------------------------------------------------------------------------------------# 
 class EncoderLayer(tf.keras.layers.Layer):
-  def __init__(self,*, emb_sz, num_heads, dff, dropout_rate=0.1):
+  def __init__(self,*, emb_sz, num_heads, dff, dropout_rate=0.5):
     super().__init__()
     self.self_attention = BaseAttention(
         num_heads=num_heads,
@@ -118,12 +118,11 @@ class EncoderLayer(tf.keras.layers.Layer):
 
 class Encoder(tf.keras.layers.Layer):
   def __init__(self, *, num_layers, emb_sz, num_heads,
-               dff, vocab_size, dropout_rate=0.1):
+               dff, input_size, dropout_rate=0.5):
     super().__init__()
     self.emb_sz = emb_sz
     self.num_layers = num_layers
-    self.pos_embedding = PositionalEmbedding(
-        vocab_size=vocab_size, emb_sz=emb_sz)
+    self.pos_embedding = PositionalEmbedding(input_size=input_size, emb_sz=emb_sz)
     self.enc_layers = [
         EncoderLayer(emb_sz=emb_sz,
                      num_heads=num_heads,
@@ -145,22 +144,33 @@ class Encoder(tf.keras.layers.Layer):
 #--------------------------------------------------------------------------------------------------------------# 
 class Transformer(tf.keras.Model):
   def __init__(self, *, num_layers, emb_sz, num_heads, dff,
-               input_vocab_size, target_vocab_size, dropout_rate=0.1):
+               input_size, target_size, dropout_rate=0.1):
     super().__init__()
+
+    # init top level layers
+    self.emb_sz = emb_sz 
     self.emb_context = tf.keras.layers.Dense(emb_sz)
     self.emb_patches = tf.keras.layers.Dense(emb_sz)
     self.encoder = Encoder(num_layers=num_layers, emb_sz=emb_sz,
                            num_heads=num_heads, dff=dff,
-                           vocab_size=input_vocab_size,
+                           input_size=input_size,
                            dropout_rate=dropout_rate)
-    # self.classification head for the ViT architecture
-    self.classification_head = tf.keras.layers.Sequential([
+    
+    # make the appropriate reg token 
+    self.num_classes = target_size
+    self.reg_token = self.add_weight(name="reg_token", 
+                                     shape=[1,1,emb_sz],
+                                     initializer=tf.keras.initializers.RandomNormal(), 
+                                     dtype=tf.float32) 
+    self.to_reg_token = tf.identity
+
+    # self."classification" head for the ViT architecture
+    self.regression_head = tf.keras.Sequential([
       tf.keras.layers.LayerNormalization(epsilon=1e-6),
-      tf.keras.layers.Dense(), 
-      tf.keras.layers.Dropout(), 
-      tf.keras.layers.Dense() 
+      tf.keras.layers.Dense(100, activation='relu'), 
+      tf.keras.layers.Dropout(hp_vit['dropout_rate']), 
+      tf.keras.layers.Dense(self.num_classes) # <- should output a 4-tuple of coords, so no activation function needed here...should just be raw coords.
     ])
-    self.final_layer = tf.keras.layers.Dense(target_vocab_size)
 
   # Compile the model 
   def compile(self, optimizer, loss, metrics):
@@ -169,53 +179,106 @@ class Transformer(tf.keras.Model):
     self.accuracy_function = metrics[0]
 
   # Forward pass 
+  @tf.function
   def call(self, inputs):
-    patches, bbox_context = inputs  
-    print(patches)
+    '''
+    Some parts of this method (specifically cls_token logic) are inspired from: Credit: https://github.com/ashishpatel26/Vision-Transformer-Keras-Tensorflow-Pytorch-Examples/blob/main/Vision_Transformer_with_tf2.ipynb
+    '''
+    patches, bbox_context = inputs 
+    
+    # Process bbox_context -> add to cls_token.
     bbox_context = tf.reshape(bbox_context, (bbox_context.shape[0], -1, 1))  # flatten & upsample the context, input: the following should return (batch_sz, 256, emb_sz)
     bbox_context = self.emb_context(bbox_context) # Embed your context 
     patches = self.emb_patches(patches) # Embed your img patches 
-    embedded = bbox_context + patches
-    x = self.encoder(embedded) # The following should return: (batch_sz, 256, emb_sz), {(batch_size, context_len, emb_sz)}
-    logits = tf.squeeze(x, axis=2) # The following should return: (batch_size, 256, 8) {(batch_size, target_len, target_vocab_size)}
-    logits = self.final_layer(logits)
-    smax = tf.nn.softmax(logits)  
-    return smax # Return the final output and the attention weights.
+    embedded = bbox_context + patches # Add bbox_context to the patches themselves -> perhaps aids in self-attention? 
 
-  def loss(label, pred):
-    loss_object = tf.keras.losses.CategoricalCrossentropy(from_logits=False, reduction='none')
+    # Concatenate with class token and pass thru encoder 
+    reg_tokens = tf.broadcast_to(self.reg_token, (embedded.shape[0], 1, self.emb_sz)) # Broadcast the self.cls_token first dimension -> batch dimension
+    embedded = tf.concat([reg_tokens, embedded], axis=1) # (64, 257, 132). (batch_sz, seq_length, emb_sz)
+    x = self.encoder(embedded) # The following should return: (batch_sz, 256, emb_sz), {(batch_size, context_len, emb_sz)}
+
+    # Pass the CLS token SPECIFICALLY through the regression head. Nothing else.  
+    x = self.to_reg_token(x[:, 0])
+    x = self.regression_head(x)
+    x = tf.expand_dims(x, axis=1) # So that you get back out (64, 1, 4) instead of just (64, 4)
+    return x
+
+  '''
+  Placeholder loss for testing. Substituted elsewhere 
+  '''
+  def loss(self, ub):
+    label, pred = ub[0], ub[1]
+    loss_object = tf.keras.losses.MeanSquaredError(reduction='sum_over_batch_size') 
     loss = loss_object(label, pred)
-    return tf.reduce_sum(loss)/(label.shape[0])
+    return loss / (label.shape[0])
   
-  def accuracy(label, pred):
+  '''
+  Placeholder accuracy function: ignore. We're not doing a classification task anymore
+  '''
+  def accuracy(self, label, pred):
     pred_indices = tf.argmax(pred, axis=1)
     true_indices = tf.argmax(label, axis=1)
     correct_predictions = tf.equal(pred_indices, true_indices)
     accuracy = tf.reduce_mean(tf.cast(correct_predictions, tf.float32))
     return accuracy
   
-  # Train the model 
-  def train(self, train_dataset, params, train_metrics_dict): 
-      train_loss_per_epoch, train_accuracy_per_epoch = 0, 0
+  '''
+  Corrrelation coeff - R^2 of some kind
+  '''
+  def r_squared(label, pred):
+    return 0
+  
+  '''
+  Training loop for the core model. 
+  '''
+  def train(self, train_dataset, train_metrics_dict): 
+      train_loss_per_epoch = 0
       train_dataset.shuffle(buffer_size=3) # Shuffle the dataset every epoch
       num_batches = 0
-      for patches, bbox_context, labels in train_dataset:
+      amt_of_batches = 0
+      for patches, bbox_context, bboxes, labels in train_dataset:
+          amt_of_batches += 1
           with tf.GradientTape() as tape: 
             out = self((patches, bbox_context))
-            loss = self.loss(labels, out)
-            accuracy = self.accuracy(labels, out) 
+            loss = self.loss([bboxes, out])
             train_loss_per_epoch+=loss.numpy()
-            train_accuracy_per_epoch+=accuracy.numpy()
             num_batches += 1
           grads = tape.gradient(loss, self.trainable_variables) # Compute the gradients 
           self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
+      print(amt_of_batches)
       train_loss_per_epoch = train_loss_per_epoch / num_batches
-      train_accuracy_per_epoch = train_accuracy_per_epoch / num_batches
       train_metrics_dict['Loss'].append(train_loss_per_epoch)
-      train_metrics_dict['Accuracy'].append(train_accuracy_per_epoch)
 
   
+# Load in stuff and build your model 
 from prep import XMLtoJSON, create_filtered_dataset
 
 def build_vit(): 
-  pass 
+
+  # datasets
+  train_dataset = create_filtered_dataset(images_path=fields['new_images_path'], annotations_path=fields['new_annotations_path'], subset_prefix='train', img_size=256, max_bbox=35, exclude_type='none', no_patch=False)
+  print(len(list(train_dataset)))
+  batched_train_dataset = train_dataset.batch(batch_size=hp_vit['batch_sz'], drop_remainder=False)
+  
+  # instantiate model 
+  vit_model = Transformer(num_layers=hp_vit['num_layers'], emb_sz=hp_vit['emb_sz'], dff=hp_vit['num_features'], num_heads=hp_vit['num_att_heads'], input_size=hp_vit['target_sz'], target_size=hp_vit['target_sz'], dropout_rate=hp_vit['dropout_rate'])
+  
+  # compile the model & init metrics 
+  vit_model.compile(
+      loss=vit_model.loss,
+      optimizer=hp_vit['optimizer'],
+      metrics=[vit_model.r_squared])
+  train_metrics_dict = {'Loss': []}
+
+  # train the model - over num_epochs
+  training_start = time.time()
+  for e in range(hp_vit['num_epochs']): 
+    batched_train_dataset.shuffle(buffer_size=3) # Shuffle the dataset every epoch  
+    vit_model.train(batched_train_dataset, train_metrics_dict)
+    epoch_loss = train_metrics_dict['Loss'][e]
+    print(f'Epoch: {e} | Loss: {epoch_loss}')
+  training_end = time.time()
+  print(f'Training took: {(training_end-training_start) // 60} minutes')
+
+# Build the vit
+build_vit()
