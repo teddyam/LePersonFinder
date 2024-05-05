@@ -171,6 +171,7 @@ class Transformer(tf.keras.Model):
   # Forward pass 
   def call(self, inputs):
     patches, bbox_context = inputs  
+    print(patches)
     bbox_context = tf.reshape(bbox_context, (bbox_context.shape[0], -1, 1))  # flatten & upsample the context, input: the following should return (batch_sz, 256, emb_sz)
     bbox_context = self.emb_context(bbox_context) # Embed your context 
     patches = self.emb_patches(patches) # Embed your img patches 
@@ -214,3 +215,7 @@ class Transformer(tf.keras.Model):
       train_metrics_dict['Accuracy'].append(train_accuracy_per_epoch)
 
   
+from prep import XMLtoJSON, create_filtered_dataset
+
+def build_vit(): 
+  pass 

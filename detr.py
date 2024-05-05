@@ -298,19 +298,20 @@ class DETR(tf.keras.Model):
     
     # Extract outputs from the pre-trained backbone model
     src, bbox_contents = inputs
+    print(src)
     final_outputs = self.backbone(src)
     src = final_outputs[len(final_outputs)-2] # (64, 14, 14, 1024) 
-    print("Backbone output we're extracting", src.shape)
+    # print("Backbone output we're extracting", src.shape)
     src = self.input_proj(src) # The last layer will have dimension: (b, 7, 7, 2048). Project that into the same input space as bbox content
-    print("Projection output", src.shape)
+    # print("Projection output", src.shape)
     tout = self.transformer((src, bbox_contents))
-    print("Transformer output:", tout.shape)
+    # print("Transformer output:", tout.shape)
     outputs_class = self.class_embed(tout)
-    print("Output class", outputs_class.shape)
+    # print("Output class", outputs_class.shape)
     outputs_coords = self.bbox_embed(tout)
-    print("Outputs coords", outputs_coords.shape)
+    # print("Outputs coords", outputs_coords.shape)
     out = {'classes': outputs_class, 'coords': outputs_coords}
-    print("OUTPUT:", out['classes'], out['coords'])
+    # print("OUTPUT:", out['classes'], out['coords'])
     return out
 
 '''

@@ -95,7 +95,7 @@ def load_json(annotation_path):
     original_height.set_shape([])
     return bounding_boxes, num_bboxes, original_width, original_height
 
-IMAGE_SIZE = 224
+IMAGE_SIZE = 256
 PATCH_SIZE = 16
 NUM_PATCHES = (IMAGE_SIZE // PATCH_SIZE) ** 2
 PROJECTION_DIM = 64
@@ -204,6 +204,7 @@ def preprocess_image_no_patch(image_path, annotation_path):
   pad_h = [pad_h, IMAGE_SIZE - new_shape[0] - pad_h]
 
   image = tf.pad(image, [[int(pad_h[0]), int(pad_h[1])], [int(pad_w[0]), int(pad_w[1])], [0, 0]], constant_values=0)
+  print(image)
   image = Rescaling(1./255)(image)
 
   bounding_boxes, num_bboxes, original_width, original_height = load_json(annotation_path)
@@ -263,10 +264,11 @@ should really just be the original images + some padding
 '''
 batched_train_dataset = train_dataset.batch(batch_size=64)
 for patches, overlap_counts, bboxes, one_hot_bboxes in batched_train_dataset.take(1):
-    print(patches.shape, overlap_counts.shape, bboxes.shape, one_hot_bboxes.shape)
-    print('Train patches shape:', patches.shape)
+    print(patches)
+    # print(patches.shape, overlap_counts.shape, bboxes.shape, one_hot_bboxes.shape)
+    # print('Train patches shape:', patches.shape)
     # print('Train bounding boxes:', bboxes)
-    print('Train overlap counts shape:', overlap_counts.shape)
+    # print('Train overlap counts shape:', overlap_counts.shape)
     # print('Train sample overlap counts:', overlap_counts.numpy().flatten()[:256])
     # print('Train one-hot encoded bounding boxes:', one_hot_bboxes.numpy())
 
