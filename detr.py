@@ -349,6 +349,8 @@ def build_detr():
   transformer_model = Transformer(num_layers=hp['num_layers'], emb_sz=hp['emb_sz'], dff=hp['num_features'], num_heads=hp['num_att_heads'], input_vocab_size=hp['num_classes'], target_vocab_size=hp['num_classes'], dropout_rate=hp['dropout_rate'])
   detr_model = DETR(wrapper_model, transformer_model, hp['num_classes'], hungarian_matching, True)
 
+  detr_model.train(batched_train_dataset)
+
   # Iterate through the dataset and pass it through the model 
   for imgs, overlap_counts, bboxes, one_hot_bboxes in batched_train_dataset: 
     out_dict = detr_model((imgs, overlap_counts))
