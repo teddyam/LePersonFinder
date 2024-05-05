@@ -6,6 +6,10 @@ import time
 import xml.etree.ElementTree as ET
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import cv2
+from tqdm import tqdm  
+from PIL import Image
+
 from tensorflow import keras
 from keras.layers import Dense, Rescaling
 
@@ -21,6 +25,8 @@ annotations_path = data_folder_path + "/Annotations/JSON"
 ImageSets = data_folder_path + "/ImageSets/Main"
 xml_folder = data_folder_path + "/Annotations"
 json_folder = annotations_path
+new_images_path = data_folder_path +  "/NewJPEGImages"
+new_annotations_path = data_folder_path + "/NewAnnotations/JSON"
 
 class XMLtoJSON(): 
     def __init__(self, xml_folder, json_folder): 
@@ -69,7 +75,70 @@ class XMLtoJSON():
 
                 with open(json_path, 'w') as json_file:
                     json.dump(data_dict, json_file, indent=4)
+                    
+def generate_new_images_and_annotations():
+    os.makedirs(new_images_path, exist_ok=True)
+    os.makedirs(new_annotations_path, exist_ok=True)
+    
+    annotation_files = os.listdir(annotations_path)
 
+    for annotation_filename in tqdm(annotation_files, desc='Generating images'):
+        if annotation_filename.endswith('.json'):
+            base_filename = annotation_filename.replace('.json', '')
+            image_filename = base_filename + '.jpg'
+            image_path = os.path.join(images_path, image_filename)
+            
+            if not os.path.exists(image_path):
+                print(f"Image does not exist: {image_path}")
+                continue
+            
+            image = cv2.imread(image_path)
+            if image is None:
+                print(f"Failed to load image: {image_path}")
+                continue
+
+            with open(os.path.join(annotations_path, annotation_filename), 'r') as file:
+                data = json.load(file)
+
+            all_bboxes = [obj['bbox'] for obj in data['objects'] if obj['name'] == 'person']
+            num_people = len(all_bboxes)
+
+            if num_people == 0:
+                new_image_path = os.path.join(new_images_path, f"{base_filename}_none.jpg")
+                cv2.imwrite(new_image_path, image)
+                empty_data = data.copy()
+                empty_data['objects'] = []
+                with open(os.path.join(new_annotations_path, f"{base_filename}_none.json"), 'w') as f:
+                    json.dump(empty_data, f, indent=4)
+                continue
+
+            xmin = min([bbox['xmin'] for bbox in all_bboxes])
+            ymin = min([bbox['ymin'] for bbox in all_bboxes])
+            xmax = max([bbox['xmax'] for bbox in all_bboxes])
+            ymax = max([bbox['ymax'] for bbox in all_bboxes])
+            composite_image_path = os.path.join(new_images_path, f"{base_filename}_all.jpg")
+            cv2.imwrite(composite_image_path, image)
+            composite_data = data.copy()
+            composite_data['objects'] = [{'name': 'person', 'bbox': {'xmin': xmin, 'ymin': ymin, 'xmax': xmax, 'ymax': ymax}}]
+            with open(os.path.join(new_annotations_path, f"{base_filename}_all.json"), 'w') as f:
+                json.dump(composite_data, f, indent=4)
+
+            for i, current_bbox in enumerate(all_bboxes):
+                mask = np.zeros_like(image, dtype=np.uint8)
+                for bbox in all_bboxes:
+                    if bbox != current_bbox:
+                        cv2.rectangle(mask, (bbox['xmin'], bbox['ymin']), (bbox['xmax'], bbox['ymax']), (255, 255, 255), thickness=-1)
+                
+                inpainted_image = cv2.inpaint(image, cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY), 3, cv2.INPAINT_TELEA)
+
+                single_mask_path = os.path.join(new_images_path, f"{base_filename}_{i}.jpg")
+                cv2.imwrite(single_mask_path, inpainted_image)
+                
+                single_data = data.copy()
+                single_data['objects'] = [{'name': 'person', 'bbox': current_bbox}]
+                with open(os.path.join(new_annotations_path, f"{base_filename}_{i}.json"), 'w') as f:
+                    json.dump(single_data, f, indent=4)
+          
 def parse_json(json_string):
     data = json.loads(json_string.decode('utf-8'))
     if 'objects' not in data or not data['objects']:
@@ -177,7 +246,7 @@ def preprocess_image_patched(image_path, annotation_path):
       bounding_boxes, original_width, original_height,
       new_shape[1], new_shape[0], pad_w, pad_h
   )
-
+  
   overlap_counts = compute_overlap_counts(bounding_boxes_scaled, IMAGE_SIZE, PATCH_SIZE)
   one_hot_bboxes = tf.one_hot(num_bboxes, MAX_COUNT_BBOXES)
 
@@ -236,21 +305,35 @@ def file_exists(file_path):
     return tf.io.gfile.exists(file_path.numpy().decode())
 '''
 Creates our datasets
+Note: set no_patch to false for VIT and the annotations_path and images_path to new_annotations_path and new_images_path
 '''
-def create_filtered_dataset(images_path, annotations_path, subset_prefix):
-    image_files = tf.data.Dataset.list_files(os.path.join(images_path, subset_prefix + '_*.jpg'))
+
+def create_filtered_dataset(images_path, annotations_path, subset_prefix, exclude_type='none', no_patch=False):
+    if exclude_type == 'none':
+        filename_pattern = f"{subset_prefix}_*.jpg"
+    elif exclude_type == 'composite':
+        filename_pattern = f"{subset_prefix}_*[^_all].jpg"
+    elif exclude_type == 'masked':
+        filename_pattern = f"{subset_prefix}_*[^0-9].jpg"
+    else:
+        raise ValueError("Invalid exclude_type specified.")
+
+    image_files = tf.data.Dataset.list_files(os.path.join(images_path, filename_pattern))
 
     def filter_func(image_file):
-        annotation_file = tf.strings.regex_replace(image_file, 'JPEGImages', 'Annotations')
-        annotation_file = tf.strings.regex_replace(annotation_file, '\.jpg', '.xml')
+        annotation_file = tf.strings.regex_replace(image_file, images_path, annotations_path)
+        annotation_file = tf.strings.regex_replace(annotation_file, '\.jpg', '.json')
         return tf.py_function(file_exists, [annotation_file], Tout=tf.bool)
 
     filtered_image_dataset = image_files.filter(filter_func)
 
     def load_and_preprocess_image(image_file):
-        annotation_file = tf.strings.regex_replace(image_file, 'JPEGImages', 'Annotations/JSON')
+        annotation_file = tf.strings.regex_replace(image_file, images_path, annotations_path)
         annotation_file = tf.strings.regex_replace(annotation_file, '\.jpg', '.json')
-        return preprocess_image_no_patch(image_file, annotation_file)
+        if no_patch:
+            return preprocess_image_no_patch(image_file, annotation_file)
+        
+        return preprocess_image_patched(image_file, annotation_file)
 
     dataset = filtered_image_dataset.map(load_and_preprocess_image, num_parallel_calls=tf.data.AUTOTUNE)
     return dataset

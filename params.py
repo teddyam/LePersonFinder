@@ -22,6 +22,8 @@ fields = {
     'data_folder_path': "data/heridal_keras_retinanet_voc",
     'images_path': "data/heridal_keras_retinanet_voc/JPEGImages",
     'annotations_path': "data/heridal_keras_retinanet_voc/Annotations/JSON",
+    'new_annotations_path': "data/heridal_keras_retinanet_voc/NewAnnotations/JSON",
+    'new_images_path': "data/heridal_keras_retinanet_voc/NewJPEGImages",
     'ImageSets': "data/heridal_keras_retinanet_voc/ImageSets/Main",
     'xml_folder': "data/heridal_keras_retinanet_voc/Annotations",
     'json_folder': "data/heridal_keras_retinanet_voc/Annotations/JSON",

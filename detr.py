@@ -321,7 +321,7 @@ from prep import XMLtoJSON, create_filtered_dataset
 from keras.applications import ResNet50
 
 def build_detr(): 
-  train_dataset = create_filtered_dataset(fields['images_path'], fields['annotations_path'], 'train')
+  train_dataset = create_filtered_dataset(fields['images_path'], fields['annotations_path'], 'train', no_patch=True)
   batched_train_dataset = train_dataset.batch(batch_size=hp['batch_sz'], drop_remainder=False)
 
   # Initialize a ResNet50 model & pre-train it 
