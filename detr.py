@@ -7,6 +7,7 @@ from tensorflow import keras
 from keras.layers import Dense, Rescaling
 from prep import train_dataset, test_dataset
 from params import hp, fields
+from losses import hungarian_matching
 
 #--------------------------------------------------------------------------------------------------------------# 
 # Positional embedding class that will look a token's embedding vector and add the corresponding position vector 
@@ -264,7 +265,7 @@ the original authors of the paper used for simplicity.
 '''
 #--------------------------------------------------------------------------------------------------------------# 
 class DETR(tf.keras.Model): 
-  def __init__(self, backbone, transformer, num_classes, aux_loss=False):
+  def __init__(self, backbone, transformer, num_classes, loss_fn, aux_loss=False):
     super().__init__()
 
     self.transformer = transformer
@@ -277,6 +278,7 @@ class DETR(tf.keras.Model):
     self.input_proj = tf.keras.layers.Conv2D(filters=1, kernel_size=1, padding='same') # <- Project the img into the same subspace as the bbox context
     self.backbone = backbone
     self.aux_loss = aux_loss
+    self.loss_fn = loss_fn
 
   def call(self, inputs):
 
@@ -312,6 +314,22 @@ class DETR(tf.keras.Model):
     out = {'classes': outputs_class, 'coords': outputs_coords}
     print("OUTPUT:", out['classes'], out['coords'])
     return out
+  
+  def train(self, train_set):
+    ''' Per epoch train pass'''
+
+    train_set.shuffle(buffer_size=3) # Shuffle the dataset every epoch
+    for batch_number, (imgs, overlap_counts, bboxes, one_hot_bboxes) in enumerate(train_set):
+      with tf.GradientTape() as tape: 
+        output = self((imgs, overlap_counts))
+        loss = self.loss_fn(bboxes, one_hot_bboxes, output['coords'], output['classes'])[0]
+        print("Loss is: ", loss)
+
+      grads = tape.gradient(loss, self.trainable_variables) # Compute the gradients 
+      self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
+
+
+  
 
 '''
 Method that runs the model from top to bottom 
@@ -329,7 +347,7 @@ def build_detr():
   layers = [model.get_layer(name).output for name in layer_names]
   wrapper_model = tf.keras.Model(inputs=model.input, outputs=layers)
   transformer_model = Transformer(num_layers=hp['num_layers'], emb_sz=hp['emb_sz'], dff=hp['num_features'], num_heads=hp['num_att_heads'], input_vocab_size=hp['num_classes'], target_vocab_size=hp['num_classes'], dropout_rate=hp['dropout_rate'])
-  detr_model = DETR(wrapper_model, transformer_model, hp['num_classes'], True)
+  detr_model = DETR(wrapper_model, transformer_model, hp['num_classes'], hungarian_matching, True)
 
   # Iterate through the dataset and pass it through the model 
   for imgs, overlap_counts, bboxes, one_hot_bboxes in batched_train_dataset: 
@@ -340,6 +358,9 @@ def build_detr():
 Run the DETR model 
 '''
 build_detr() 
+
+
+
 
 
 

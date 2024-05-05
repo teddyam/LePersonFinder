@@ -168,7 +168,7 @@ IMAGE_SIZE = 224
 PATCH_SIZE = 16
 NUM_PATCHES = (IMAGE_SIZE // PATCH_SIZE) ** 2
 PROJECTION_DIM = 64
-MAX_COUNT_BBOXES = 35
+MAX_COUNT_BBOXES = 50
 
 def scale_bounding_boxes(bounding_boxes, original_width, original_height, new_width, new_height, pad_w, pad_h):
   if tf.size(bounding_boxes) == 0:
@@ -307,7 +307,7 @@ Creates our datasets
 Note: set no_patch to false for VIT and the annotations_path and images_path to new_annotations_path and new_images_path
 '''
 
-def create_filtered_dataset(images_path, annotations_path, subset_prefix, exclude_type='none', no_patch=False):
+def create_filtered_dataset(images_path, annotations_path, subset_prefix, exclude_type='none', no_patch=True):
     if exclude_type == 'none':
         filename_pattern = f"{subset_prefix}_*.jpg"
     elif exclude_type == 'composite':
