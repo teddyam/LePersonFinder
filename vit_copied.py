@@ -151,7 +151,7 @@ def run_experiment(model):
             print('patches shape', patches_x.shape)
             patches_x = tf.reshape(patches_x, (batch_size, 256, 256, 3))
             print('patches shape', patches_x.shape)
-            loss, r_squared = model.fit(patches_x, bboxes_y) # <- completely hangs here, no idea what's happening
+            loss, r_squared = model.train_on_batch(patches_x, bboxes_y) # <- completely hangs here, no idea what's happening
             print(loss)
 
 vit_classifier = create_vit_classifier()
