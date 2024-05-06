@@ -81,10 +81,11 @@ class CausalSelfAttention(BaseAttention):
 class FeedForward(tf.keras.layers.Layer):
   def __init__(self, emb_sz, dff, dropout_rate=0.1):
     super().__init__()
+    self.initializer = tf.keras.initializers.RandomNormal(mean=0, stddev=0.02)
     self.seq = tf.keras.Sequential([
-      tf.keras.layers.Dense(dff, activation='relu'),
-      tf.keras.layers.Dense(emb_sz),
-      tf.keras.layers.Dropout(dropout_rate)
+      tf.keras.layers.Dense(dff, kernel_initializer=self.initializer, activation='relu'),
+      tf.keras.layers.Dense(emb_sz, kernel_initializer=self.initializer, activation='relu'),
+      tf.keras.layers.Dropout(dropout_rate),
     ])
     self.add = tf.keras.layers.Add()
     self.layer_norm = tf.keras.layers.LayerNormalization()
@@ -102,7 +103,7 @@ class FeedForward(tf.keras.layers.Layer):
 class EncoderLayer(tf.keras.layers.Layer):
   def __init__(self,*, emb_sz, num_heads, dff, dropout_rate=0.5):
     super().__init__()
-    self.self_attention = BaseAttention(
+    self.self_attention = CausalSelfAttention(
         num_heads=num_heads,
         key_dim=emb_sz,
         dropout=dropout_rate)
@@ -130,6 +131,7 @@ class Encoder(tf.keras.layers.Layer):
                      dropout_rate=dropout_rate)
         for _ in range(num_layers)]
     self.dropout = tf.keras.layers.Dropout(dropout_rate)
+    self.jank_shape_adj = tf.keras.layers.Dense(1)
 
   def call(self, x):
     # x is token-IDs shape: (batch, seq_len). When you pass into pos_embedding, will do x = x + pos_embedding(x)
@@ -137,6 +139,11 @@ class Encoder(tf.keras.layers.Layer):
     x = self.dropout(x)  
     for i in range(self.num_layers):
       x = self.enc_layers[i](x)
+    
+    x = tf.transpose(x, [0, 2, 1])
+    x = self.jank_shape_adj(x)
+    x = tf.transpose(x, [0, 2, 1])
+
     return x  # Should result in shape of (batch_size, seq_len, emb_sz).
   
 #--------------------------------------------------------------------------------------------------------------# 
@@ -149,8 +156,9 @@ class Transformer(tf.keras.Model):
 
     # init top level layers
     self.emb_sz = emb_sz 
-    self.emb_context = tf.keras.layers.Dense(emb_sz)
-    self.emb_patches = tf.keras.layers.Dense(emb_sz)
+    self.initializer = tf.keras.initializers.RandomNormal(mean=0, stddev=0.02)
+    self.emb_context = tf.keras.layers.Dense(emb_sz, kernel_initializer=self.initializer)
+    self.emb_patches = tf.keras.layers.Dense(emb_sz, kernel_initializer=self.initializer)
     self.encoder = Encoder(num_layers=num_layers, emb_sz=emb_sz,
                            num_heads=num_heads, dff=dff,
                            input_size=input_size,
@@ -158,17 +166,19 @@ class Transformer(tf.keras.Model):
     
     # make the appropriate reg token 
     self.num_classes = target_size
-    self.reg_token = self.add_weight(name="reg_token", 
-                                     shape=[1,1,emb_sz],
-                                     initializer=tf.keras.initializers.RandomNormal(), 
-                                     dtype=tf.float32) 
-    self.to_reg_token = tf.identity
+    # self.reg_token = self.add_weight(name="reg_token", 
+    #                                  shape=[1,1,emb_sz],
+    #                                  initializer=tf.keras.initializers.RandomNormal(mean=0, stddev=0.02), 
+    #                                  dtype=tf.float32) 
+    # self.to_reg_token = tf.identity
 
     # self."classification" head for the ViT architecture
     self.regression_head = tf.keras.Sequential([
       tf.keras.layers.LayerNormalization(epsilon=1e-6),
-      tf.keras.layers.Dense(100, activation='relu'), 
-      tf.keras.layers.Dropout(hp_vit['dropout_rate']), 
+      tf.keras.layers.Dense(1000, activation='relu'), 
+      # tf.keras.layers.Dropout(hp_vit['dropout_rate']), 
+      tf.keras.layers.Dense(500, activation='relu'), 
+      tf.keras.layers.Dense(250, activation='relu'), 
       tf.keras.layers.Dense(self.num_classes) # <- should output a 4-tuple of coords, so no activation function needed here...should just be raw coords.
     ])
 
@@ -179,7 +189,6 @@ class Transformer(tf.keras.Model):
     self.accuracy_function = metrics[0]
 
   # Forward pass 
-  @tf.function
   def call(self, inputs):
     '''
     Some parts of this method (specifically cls_token logic) are inspired from: Credit: https://github.com/ashishpatel26/Vision-Transformer-Keras-Tensorflow-Pytorch-Examples/blob/main/Vision_Transformer_with_tf2.ipynb
@@ -193,14 +202,14 @@ class Transformer(tf.keras.Model):
     embedded = bbox_context + patches # Add bbox_context to the patches themselves -> perhaps aids in self-attention? 
 
     # Concatenate with class token and pass thru encoder 
-    reg_tokens = tf.broadcast_to(self.reg_token, (embedded.shape[0], 1, self.emb_sz)) # Broadcast the self.cls_token first dimension -> batch dimension
-    embedded = tf.concat([reg_tokens, embedded], axis=1) # (64, 257, 132). (batch_sz, seq_length, emb_sz)
+    # reg_tokens = tf.broadcast_to(self.reg_token, (embedded.shape[0], 1, self.emb_sz)) # Broadcast the self.cls_token first dimension -> batch dimension
+    # embedded = tf.concat([reg_tokens, embedded], axis=1) # (64, 257, 132). (batch_sz, seq_length, emb_sz)
     x = self.encoder(embedded) # The following should return: (batch_sz, 256, emb_sz), {(batch_size, context_len, emb_sz)}
 
     # Pass the CLS token SPECIFICALLY through the regression head. Nothing else.  
-    x = self.to_reg_token(x[:, 0])
+    # x = self.to_reg_token(x[:, 0])
     x = self.regression_head(x)
-    x = tf.expand_dims(x, axis=1) # So that you get back out (64, 1, 4) instead of just (64, 4)
+    # x = tf.expand_dims(x, axis=1) # So that you get back out (64, 1, 4) instead of just (64, 4)
     return x
 
   '''
@@ -208,7 +217,8 @@ class Transformer(tf.keras.Model):
   '''
   def loss(self, ub):
     label, pred = ub[0], ub[1]
-    loss_object = tf.keras.losses.MeanSquaredError(reduction='sum_over_batch_size') 
+    # loss_object = tf.keras.losses.MeanSquaredError() 
+    loss_object = tf.keras.losses.Huber()
     loss = loss_object(label, pred)
     return loss / (label.shape[0])
   
@@ -234,18 +244,25 @@ class Transformer(tf.keras.Model):
   def train(self, train_dataset, train_metrics_dict): 
       train_loss_per_epoch = 0
       train_dataset.shuffle(buffer_size=3) # Shuffle the dataset every epoch
-      num_batches = 0
-      amt_of_batches = 0
+      num_batches = 0 
       for patches, bbox_context, bboxes, labels in train_dataset:
-          amt_of_batches += 1
           with tf.GradientTape() as tape: 
             out = self((patches, bbox_context))
+            print('')
+            print('========================')
+            # print('this is the amx of patches', tf.reduce_max(patches))
+            # tf.print(patches, summarize=-1)
+            # print('thsi si the min of patches', tf.reduce_min(patches))
+            print('this is our output: ', out)
+            print('this is our label: ', bboxes)
+            # print('this is our model weights: ', self.get_weights())
+            print('========================')
+            print('')
             loss = self.loss([bboxes, out])
             train_loss_per_epoch+=loss.numpy()
             num_batches += 1
           grads = tape.gradient(loss, self.trainable_variables) # Compute the gradients 
           self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
-      print(amt_of_batches)
       train_loss_per_epoch = train_loss_per_epoch / num_batches
       train_metrics_dict['Loss'].append(train_loss_per_epoch)
 
@@ -256,8 +273,8 @@ from prep import XMLtoJSON, create_filtered_dataset
 def build_vit(): 
 
   # datasets
-  train_dataset = create_filtered_dataset(images_path=fields['new_images_path'], annotations_path=fields['new_annotations_path'], subset_prefix='train', img_size=256, max_bbox=35, exclude_type='none', no_patch=False)
-  print(len(list(train_dataset)))
+  train_dataset = create_filtered_dataset(images_path=fields['new_images_path'], annotations_path=fields['new_annotations_path'], subset_prefix='train', img_size=256, max_bbox=1, exclude_type='none', no_patch=False)
+  # print(len(list(train_dataset)))
   batched_train_dataset = train_dataset.batch(batch_size=hp_vit['batch_sz'], drop_remainder=False)
   
   # instantiate model 
@@ -265,7 +282,7 @@ def build_vit():
   
   # compile the model & init metrics 
   vit_model.compile(
-      loss=vit_model.loss,
+      loss=tf.keras.losses.MeanSquaredError,
       optimizer=hp_vit['optimizer'],
       metrics=[vit_model.r_squared])
   train_metrics_dict = {'Loss': []}
