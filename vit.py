@@ -10,6 +10,7 @@ from tensorflow import keras
 from keras.layers import Dense, Rescaling
 from prep import train_dataset, test_dataset
 from params import hp_vit, fields
+from prep import XMLtoJSON, create_filtered_dataset
 
 #--------------------------------------------------------------------------------------------------------------# 
 # Positional embedding class that will look a token's embedding vector and add the corresponding position vector 
@@ -101,19 +102,20 @@ class FeedForward(tf.keras.layers.Layer):
 # Encoder: Consists of Encoder Layers, which are blocks of Self Attention -> FFN -> Residual Connection -> LN
 #--------------------------------------------------------------------------------------------------------------# 
 class EncoderLayer(tf.keras.layers.Layer):
-  def __init__(self,*, emb_sz, num_heads, dff, dropout_rate=0.5):
+  def __init__(self,*, emb_sz, num_heads, dff, dropout_rate):
     super().__init__()
-    self.self_attention = CausalSelfAttention(
-        num_heads=num_heads,
-        key_dim=emb_sz,
-        dropout=dropout_rate)
+    # self.self_attention = CausalSelfAttention(
+    #     num_heads=num_heads,
+    #     key_dim=emb_sz,
+    #     dropout=dropout_rate)
+    self.self_attention = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim =emb_sz, dropout=0.1)
     self.layer_norm = tf.keras.layers.LayerNormalization()
     self.ffn = FeedForward(emb_sz, dff)
 
   def call(self, x):
     # LAYER NORM -> MHA -> [LAYER NORM -> FFN]
     x = self.layer_norm(x) 
-    x = self.self_attention(x)
+    x = self.self_attention(x,x)
     x = self.ffn(x)
     return x
 
@@ -140,9 +142,9 @@ class Encoder(tf.keras.layers.Layer):
     for i in range(self.num_layers):
       x = self.enc_layers[i](x)
     
-    x = tf.transpose(x, [0, 2, 1])
-    x = self.jank_shape_adj(x)
-    x = tf.transpose(x, [0, 2, 1])
+    # x = tf.transpose(x, [0, 2, 1])
+    # x = self.jank_shape_adj(x)
+    # x = tf.transpose(x, [0, 2, 1])
 
     return x  # Should result in shape of (batch_size, seq_len, emb_sz).
   
@@ -175,10 +177,8 @@ class Transformer(tf.keras.Model):
     # self."classification" head for the ViT architecture
     self.regression_head = tf.keras.Sequential([
       tf.keras.layers.LayerNormalization(epsilon=1e-6),
-      tf.keras.layers.Dense(1000, activation='relu'), 
-      # tf.keras.layers.Dropout(hp_vit['dropout_rate']), 
       tf.keras.layers.Dense(500, activation='relu'), 
-      tf.keras.layers.Dense(250, activation='relu'), 
+      tf.keras.layers.Dropout(hp_vit['dropout_rate']), 
       tf.keras.layers.Dense(self.num_classes) # <- should output a 4-tuple of coords, so no activation function needed here...should just be raw coords.
     ])
 
@@ -196,17 +196,19 @@ class Transformer(tf.keras.Model):
     patches, bbox_context = inputs 
     
     # Process bbox_context -> add to cls_token.
-    bbox_context = tf.reshape(bbox_context, (bbox_context.shape[0], -1, 1))  # flatten & upsample the context, input: the following should return (batch_sz, 256, emb_sz)
+    bbox_context = tf.reshape(bbox_context, (bbox_context.shape[0], -1, 1))  # (batch_sz, 256, 768)
     bbox_context = self.emb_context(bbox_context) # Embed your context 
+    tf.print(bbox_context, summarize=-1)
     patches = self.emb_patches(patches) # Embed your img patches 
-    embedded = bbox_context + patches # Add bbox_context to the patches themselves -> perhaps aids in self-attention? 
+    # embedded = bbox_context + patches # Add bbox_context to the patches themselves
+    embedded = patches
 
     # Concatenate with class token and pass thru encoder 
     # reg_tokens = tf.broadcast_to(self.reg_token, (embedded.shape[0], 1, self.emb_sz)) # Broadcast the self.cls_token first dimension -> batch dimension
     # embedded = tf.concat([reg_tokens, embedded], axis=1) # (64, 257, 132). (batch_sz, seq_length, emb_sz)
     x = self.encoder(embedded) # The following should return: (batch_sz, 256, emb_sz), {(batch_size, context_len, emb_sz)}
 
-    # Pass the CLS token SPECIFICALLY through the regression head. Nothing else.  
+    # Pass the REGRESSION token SPECIFICALLY through the regression head. Nothing else.  
     # x = self.to_reg_token(x[:, 0])
     x = self.regression_head(x)
     # x = tf.expand_dims(x, axis=1) # So that you get back out (64, 1, 4) instead of just (64, 4)
@@ -215,22 +217,22 @@ class Transformer(tf.keras.Model):
   '''
   Placeholder loss for testing. Substituted elsewhere 
   '''
-  def loss(self, ub):
-    label, pred = ub[0], ub[1]
-    # loss_object = tf.keras.losses.MeanSquaredError() 
-    loss_object = tf.keras.losses.Huber()
-    loss = loss_object(label, pred)
-    return loss / (label.shape[0])
+  # def loss(self, ub):
+  #   label, pred = ub[0], ub[1]
+  #   # loss_object = tf.keras.losses.MeanSquaredError() 
+  #   loss_object = tf.keras.losses.Huber()
+  #   loss = loss_object(label, pred)
+  #   return loss / (label.shape[0])
   
   '''
   Placeholder accuracy function: ignore. We're not doing a classification task anymore
   '''
-  def accuracy(self, label, pred):
-    pred_indices = tf.argmax(pred, axis=1)
-    true_indices = tf.argmax(label, axis=1)
-    correct_predictions = tf.equal(pred_indices, true_indices)
-    accuracy = tf.reduce_mean(tf.cast(correct_predictions, tf.float32))
-    return accuracy
+  # def accuracy(self, label, pred):
+  #   pred_indices = tf.argmax(pred, axis=1)
+  #   true_indices = tf.argmax(label, axis=1)
+  #   correct_predictions = tf.equal(pred_indices, true_indices)
+  #   accuracy = tf.reduce_mean(tf.cast(correct_predictions, tf.float32))
+  #   return accuracy
   
   '''
   Corrrelation coeff - R^2 of some kind
@@ -258,7 +260,7 @@ class Transformer(tf.keras.Model):
             # print('this is our model weights: ', self.get_weights())
             print('========================')
             print('')
-            loss = self.loss([bboxes, out])
+            loss = self.loss_function(bboxes, out)
             train_loss_per_epoch+=loss.numpy()
             num_batches += 1
           grads = tape.gradient(loss, self.trainable_variables) # Compute the gradients 
@@ -266,11 +268,10 @@ class Transformer(tf.keras.Model):
       train_loss_per_epoch = train_loss_per_epoch / num_batches
       train_metrics_dict['Loss'].append(train_loss_per_epoch)
 
-  
-# Load in stuff and build your model 
-from prep import XMLtoJSON, create_filtered_dataset
-
 def build_vit(): 
+
+  # set seed for rando initialization 
+  tf.random.set_seed(42)
 
   # datasets
   train_dataset = create_filtered_dataset(images_path=fields['new_images_path'], annotations_path=fields['new_annotations_path'], subset_prefix='train', img_size=256, max_bbox=1, exclude_type='none', no_patch=False)
@@ -284,7 +285,7 @@ def build_vit():
   vit_model.compile(
       loss=tf.keras.losses.MeanSquaredError,
       optimizer=hp_vit['optimizer'],
-      metrics=[vit_model.r_squared])
+      metrics=[tf.keras.losses.MeanSquaredError])
   train_metrics_dict = {'Loss': []}
 
   # train the model - over num_epochs

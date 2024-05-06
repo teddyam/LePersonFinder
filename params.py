@@ -4,7 +4,7 @@ import tensorflow as tf
 hp_vit = {
     'batch_sz': 2, 
     'target_sz': 4, # <- for each of the four coords to predict
-    'num_att_heads': 5, 
+    'num_att_heads': 3, 
     'key_dim': 10, 
     'query_dim': 10, 
     'value_dim': 10, 
