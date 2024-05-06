@@ -250,6 +250,15 @@ def preprocess_image_patched(image_path, annotation_path, img_size, max_bbox):
       bounding_boxes, original_width, original_height,
       new_shape[1], new_shape[0], pad_w, pad_h, max_bbox
   )
+
+  @tf.function
+  def pad_bounding_boxes(bounding_boxes_scaled):
+    num_boxes = tf.shape(bounding_boxes_scaled)[0]
+    padding_value = max_bbox - num_boxes
+    padding_value = tf.cast(padding_value, tf.int32)
+    bounding_boxes_padded = tf.pad(bounding_boxes_scaled, [[0, padding_value], [0, 0]], mode='CONSTANT')
+    return bounding_boxes_padded
+  bounding_boxes_scaled = pad_bounding_boxes(bounding_boxes_scaled)
   
   overlap_counts = compute_overlap_counts(bounding_boxes_scaled, img_size, PATCH_SIZE)
   # one_hot_bboxes = tf.one_hot(num_bboxes, max_bbox)

@@ -2,7 +2,7 @@ import tensorflow as tf
 
 # Hyperparameters & general stats for VIT. Note "vocab_sz" = "num_classes"
 hp_vit = {
-    'batch_sz': 2, 
+    'batch_sz': 256, 
     'target_sz': 2, # <- for each of the four coords to predict. or 2 if classification task 
     'num_att_heads': 3, 
     'key_dim': 10, 
@@ -12,7 +12,7 @@ hp_vit = {
     'num_features': 768, # <- 256 (window_sz) * 3 (num_channels)
     'emb_sz': 132, # <- arbitrarily selected
     'num_layers': 5, # <- specs number of encoder layers to use 
-    'learning_rate': 0.001, 
+    'learning_rate': 0.01, 
     'num_epochs': 100, 
     'dropout_rate': 0.2,
     'optimizer': tf.keras.optimizers.Adam(learning_rate=0.01)
@@ -41,10 +41,10 @@ fields = {
     'data_folder_path': "data/heridal_keras_retinanet_voc",
     'images_path': "data/heridal_keras_retinanet_voc/JPEGImages",
     'annotations_path': "data/heridal_keras_retinanet_voc/Annotations/JSON",
-    # 'new_annotations_path': "data/heridal_keras_retinanet_voc/NewAnnotations/JSON",
-    # 'new_images_path': "data/heridal_keras_retinanet_voc/NewJPEGImages",
-    'new_annotations_path': "data/heridal_keras_retinanet_voc/SingleExJSON",
-    'new_images_path': "data/heridal_keras_retinanet_voc/SingleExImage",
+    'new_annotations_path': "data/heridal_keras_retinanet_voc/NewAnnotations/JSON",
+    'new_images_path': "data/heridal_keras_retinanet_voc/NewJPEGImages",
+    # 'new_annotations_path': "data/heridal_keras_retinanet_voc/SingleExJSON",
+    # 'new_images_path': "data/heridal_keras_retinanet_voc/SingleExImage",
     'ImageSets': "data/heridal_keras_retinanet_voc/ImageSets/Main",
     'xml_folder': "data/heridal_keras_retinanet_voc/Annotations",
     'json_folder': "data/heridal_keras_retinanet_voc/Annotations/JSON",

@@ -210,7 +210,6 @@ class Transformer(tf.keras.Model):
     # Pass the REGRESSION token SPECIFICALLY through the regression head. Nothing else.  
     x = self.to_cls_token(x[:, 0])
     x = self.cls_head(x)
-    x = tf.expand_dims(x, axis=1) # So that you get back out (64, 1, 4) instead of just (64, 4)
     return x
   
   # Compile the model 
@@ -229,11 +228,14 @@ class Transformer(tf.keras.Model):
       for patches, bbox_context, bboxes, labels in train_dataset:
           with tf.GradientTape() as tape: 
             out = self((patches, bbox_context))
-            labels = tf.expand_dims(labels, axis=1)
+            out = tf.reshape(out, (out.shape[0], 2))
+            labels = tf.reshape(labels, (labels.shape[0], 2))
             loss = self.loss_function(out, labels)
             train_loss_per_epoch+=loss.numpy()
+            print('per batch loss: ', loss.numpy())
             accuracy = self.accuracy_function(out, labels) 
             train_accuracy_per_epoch+=accuracy.numpy()
+            print('per batch accuracy: ', accuracy.numpy())
             num_batches += 1
           grads = tape.gradient(loss, self.trainable_variables) # Compute the gradients 
           self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
@@ -247,8 +249,9 @@ class Transformer(tf.keras.Model):
     num_batches = 0
     for patches, bbox_context, bboxes, labels in test_dataset:
        out = self((patches, bbox_context))
+       out = tf.reshape(out, (out.shape[0], 2))
+       labels = tf.reshape(labels, (labels.shape[0], 2))
        loss = self.loss_function(out, labels)
-       labels = tf.expand_dims(labels, axis=1)
        accuracy = self.accuracy_function(out, labels) 
        test_loss_per_epoch+=loss.numpy()
        test_accuracy_per_epoch+=accuracy.numpy()
@@ -264,9 +267,9 @@ def build_vit():
   tf.random.set_seed(42)
 
   # set the datasets
-  train_dataset = create_filtered_dataset(images_path=fields['new_images_path'], annotations_path=fields['new_annotations_path'], subset_prefix='train', img_size=1024, max_bbox=2, exclude_type='none', no_patch=False)
+  train_dataset = create_filtered_dataset(images_path=fields['images_path'], annotations_path=fields['annotations_path'], subset_prefix='train', img_size=256, max_bbox=35, exclude_type='none', no_patch=False)
   batched_train_dataset = train_dataset.batch(batch_size=hp_vit['batch_sz'], drop_remainder=False)
-  test_dataset = create_filtered_dataset(images_path=fields['new_images_path'], annotations_path=fields['new_annotations_path'], subset_prefix='test', img_size=1024, max_bbox=2, exclude_type='none', no_patch=False)
+  test_dataset = create_filtered_dataset(images_path=fields['images_path'], annotations_path=fields['annotations_path'], subset_prefix='test', img_size=256, max_bbox=35, exclude_type='none', no_patch=False)
   batched_test_dataset = test_dataset.batch(batch_size=hp_vit['batch_sz'], drop_remainder=False)
 
   # instantiate model 
