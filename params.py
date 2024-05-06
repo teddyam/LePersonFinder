@@ -3,7 +3,7 @@ import tensorflow as tf
 # Hyperparameters & general stats for VIT. Note "vocab_sz" = "num_classes"
 hp_vit = {
     'batch_sz': 2, 
-    'target_sz': 4, # <- for each of the four coords to predict
+    'target_sz': 2, # <- for each of the four coords to predict. or 2 if classification task 
     'num_att_heads': 3, 
     'key_dim': 10, 
     'query_dim': 10, 

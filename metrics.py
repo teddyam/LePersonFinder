@@ -97,18 +97,26 @@ def linear_combo_loss(box_preds, box_trues):
 '''
 Mean Squared Error
 '''
-def loss_placeholder(self, ub):
-    label, pred = ub[0], ub[1]
-    loss_object = tf.keras.losses.MeanSquaredError() 
-    loss = loss_object(label, pred)
-    return loss / (label.shape[0])
+def mse(y_pred, y_label):
+    loss = tf.keras.losses.MeanSquaredError()(y_label, y_pred)
+    return loss / (y_label.shape[0])
 
+'''
+Cross Entropy Loss
+'''
+def cross_entropy(y_pred, y_label):
+    loss = tf.keras.losses.CategoricalCrossentropy()(y_label, y_pred)
+    return loss / (y_label.shape[0])
 
 '''
 Accuracy (custom)
 '''
-def accuracy():
-    return 0
+def binary_accuracy(y_pred, y_label):
+    pred_indices = tf.argmax(y_pred, axis=1)
+    true_indices = tf.argmax(y_label, axis=1)
+    correct_predictions = tf.equal(pred_indices, true_indices)
+    accuracy = tf.reduce_mean(tf.cast(correct_predictions, tf.float32))
+    return accuracy
 
 '''
 R squared(custom)

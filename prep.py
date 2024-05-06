@@ -252,7 +252,11 @@ def preprocess_image_patched(image_path, annotation_path, img_size, max_bbox):
   )
   
   overlap_counts = compute_overlap_counts(bounding_boxes_scaled, img_size, PATCH_SIZE)
-  one_hot_bboxes = tf.one_hot(num_bboxes, max_bbox)
+  # one_hot_bboxes = tf.one_hot(num_bboxes, max_bbox)
+  if num_bboxes > 0: 
+    one_hot_bboxes = tf.constant([0,1], dtype='float32') 
+  else:
+    one_hot_bboxes = tf.zeros((1,2))
 
   return patches, overlap_counts, bounding_boxes_scaled, one_hot_bboxes
 
@@ -298,7 +302,13 @@ def preprocess_image_no_patch(image_path, annotation_path, img_size, max_bbox):
 
   bounding_boxes_scaled = pad_bounding_boxes(bounding_boxes_scaled)
   overlap_counts = compute_overlap_counts(bounding_boxes_scaled, img_size, PATCH_SIZE)
-  one_hot_bboxes = tf.one_hot(num_bboxes, max_bbox)
+
+  # new classification 
+  # one_hot_bboxes = tf.one_hot(num_bboxes, max_bbox)
+  if num_bboxes > 0: 
+    one_hot_bboxes = tf.constant([0,1], dtype='float32') 
+  else:
+    one_hot_bboxes = tf.zeros((1,2))
 
   return image, overlap_counts, bounding_boxes_scaled, one_hot_bboxes
 
